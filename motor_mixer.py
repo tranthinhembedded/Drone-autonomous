@@ -1,45 +1,38 @@
 class QuadXMixer:
     def __init__(self, min_cmd=1100, max_cmd=1900):
         """
-        Bộ trộn tín hiệu theo chuẩn C++ tham khảo (espPIDDrone.txt).
-        
-        CẤU HÌNH ĐỘNG CƠ:
+        CẤU HÌNH ĐỘNG CƠ (QuadX):
         ---------------------------------------------------------
-        Vị trí          |  Chiều quay (Spin) |  Ký hiệu logic
+        M1: Trước Phải  (Front Right)
+        M2: Sau  Phải   (Back/Rear Right)
+        M3: Sau  Trái   (Back/Rear Left)
+        M4: Trước Trái  (Front Left)
         ---------------------------------------------------------
-        M1: Trước Phải  |  CCW (Ngược chiều) |  FR_CCW
-        M2: Sau Phải    |  CW  (Cùng chiều)  |  BR_CW
-        M3: Sau Trái    |  CCW (Ngược chiều) |  BL_CCW
-        M4: Trước Trái  |  CW  (Cùng chiều)  |  FL_CW
-        ---------------------------------------------------------
+
+        QUY ƯỚC DẤU:
+        - r_out > 0: roll dương = nghiêng phải  -> tăng bên TRÁI (M3,M4), giảm bên PHẢI (M1,M2)
+        - p_out > 0: pitch dương = chúi xuống   -> tăng phía SAU (M2,M3), giảm phía TRƯỚC (M1,M4)
         """
         self.min_cmd = min_cmd
         self.max_cmd = max_cmd
 
-    def compute(self, throttle, r_out, p_out, y_out):
+    def compute(self, throttle, r_out, p_out, y_out=None):
         """
-        Tính toán xung PWM dựa trên công thức từ file C++ tham khảo.
+        Tính PWM. y_out hiện chưa dùng (bỏ yaw).
         """
-        
-        # Công thức từ dòng 100-104 trong espPIDDrone.txt
-        
-        # M1: Front Right - CCW
-        # InputThrottle - InputRoll - InputPitch - InputYaw
-        m1 = throttle - r_out - p_out - y_out
 
-        # M2: Rear Right - CW
-        # InputThrottle - InputRoll + InputPitch + InputYaw
-        m2 = throttle - r_out + p_out + y_out
+        # M1: Front Right
+        m1 = throttle - r_out - p_out
 
-        # M3: Rear Left - CCW
-        # InputThrottle + InputRoll + InputPitch - InputYaw
-        m3 = throttle + r_out + p_out - y_out
+        # M2: Rear Right
+        m2 = throttle - r_out + p_out
 
-        # M4: Front Left - CW
-        # InputThrottle + InputRoll - InputPitch + InputYaw
-        m4 = throttle + r_out - p_out + y_out
+        # M3: Rear Left
+        m3 = throttle + r_out + p_out
 
-        # Kẹp giá trị trong khoảng an toàn
+        # M4: Front Left
+        m4 = throttle + r_out - p_out
+
         return [self.clamp(m1), self.clamp(m2), self.clamp(m3), self.clamp(m4)]
 
     def clamp(self, value):

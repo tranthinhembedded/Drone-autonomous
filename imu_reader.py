@@ -15,4 +15,4 @@ def get_roll_pitch():
     # Sử dụng bộ lọc bù (Complementary) vì nó mượt và ít trễ hơn Kalman trong code này
     # Lưu ý: Kiểm tra thực tế xem Roll là X hay Y. 
     # Trong code gốc: compAngleX gán cho roll, compAngleY gán cho pitch.
-    return imu.get_kalman_pitch(), imu.get_kalman_roll()
+    return imu.get_kalman_roll(), imu.get_kalman_pitch()

@@ -1,165 +1,142 @@
-# angle_meter_alpha.py
-from kalman_filter import KalmanAngle
 import smbus2
 import time
 import math
+from kalman_filter import KalmanFilter
 import threading
 
-class AngleMeterAlpha:
+class AngleMeterAlpha():
+
+    RAD_TO_DEG = 57.29578
+    M_PI = 3.14159265358979323846
+
+    GYRO_SCALE = 131.0  # 131 LSB = 1 deg/sec for default ±250 dps
+    ACCEL_SCALE = 16384.0  # 16384 LSB = 1g for default ±2g
+
+    bus = smbus2.SMBus(1)
+    DeviceAddress = 0x68
+
+    # Kalman filter instances
+    kalmanX = KalmanFilter()
+    kalmanY = KalmanFilter()
+
+    # Kalman filter angles
+    kalAngleX = 0.0
+    kalAngleY = 0.0
+
+    # Kalman filter timers
+    last_time = time.time()
+
+    # Thread safety variables
+    lock = threading.Lock()
+    roll = 0.0
+    pitch = 0.0
+
     def __init__(self):
-        self.bus = smbus2.SMBus(1)
-        self.DeviceAddress = 0x68
         self.MPU_Init()
-        
-        self.pitch = 0.0
-        self.roll = 0.0
-        
-        # [MỚI] Các biến lưu tốc độ góc cho Rate Loop PID
-        self.rate_roll = 0.0
-        self.rate_pitch = 0.0
-        self.rate_yaw = 0.0
-        
-        self.compl_pitch = 0.0
-        self.compl_roll = 0.0
-        self.kalman_pitch = 0.0
-        self.kalman_roll = 0.0
+        self.kalmanX.setAngle(0.0)
+        self.kalmanY.setAngle(0.0)
+        self.last_time = time.time()
 
     def MPU_Init(self):
+        # Write to sample rate register
         self.bus.write_byte_data(self.DeviceAddress, 0x19, 7)
+        # Write to power management register
         self.bus.write_byte_data(self.DeviceAddress, 0x6B, 1)
-        self.bus.write_byte_data(self.DeviceAddress, 0x1A, int('0000110', 2))
-        self.bus.write_byte_data(self.DeviceAddress, 0x1B, 24)
+        # Write to Configuration register
+        self.bus.write_byte_data(self.DeviceAddress, 0x1A, 0)
+        # Write to Gyro configuration register
+        self.bus.write_byte_data(self.DeviceAddress, 0x1B, 0)
+        # Write to interrupt enable register
         self.bus.write_byte_data(self.DeviceAddress, 0x38, 1)
 
     def read_raw_data(self, addr):
+        # Accel and Gyro value are 16-bit
         high = self.bus.read_byte_data(self.DeviceAddress, addr)
-        low = self.bus.read_byte_data(self.DeviceAddress, addr+1)
+        low = self.bus.read_byte_data(self.DeviceAddress, addr + 1)
         value = ((high << 8) | low)
+        # to get signed value from mpu6050
         if value > 32768:
             value = value - 65536
         return value
 
+    def read_angles_loop(self):
+        # Complementary filter initial state
+        compAngleX = 0.0
+        compAngleY = 0.0
+        gyroXAngle = 0.0
+        gyroYAngle = 0.0
+
+        try:
+            while True:
+                # Read Accelerometer raw values
+                accX = self.read_raw_data(0x3B)
+                accY = self.read_raw_data(0x3D)
+                accZ = self.read_raw_data(0x3F)
+
+                # Read Gyroscope raw values
+                gyroX = self.read_raw_data(0x43)
+                gyroY = self.read_raw_data(0x45)
+                gyroZ = self.read_raw_data(0x47)
+
+                # Convert raw to scaled units
+                Ax = accX / self.ACCEL_SCALE
+                Ay = accY / self.ACCEL_SCALE
+                Az = accZ / self.ACCEL_SCALE
+
+                Gx = gyroX / self.GYRO_SCALE
+                Gy = gyroY / self.GYRO_SCALE
+                Gz = gyroZ / self.GYRO_SCALE
+
+                # Calculate dt
+                curr_time = time.time()
+                dt = curr_time - self.last_time
+                self.last_time = curr_time
+                if dt <= 0:
+                    dt = 0.001
+
+                # Calculate roll and pitch from accelerometer (degrees)
+                roll_acc = math.atan2(Ay, Az) * self.RAD_TO_DEG
+                pitch_acc = math.atan2(-Ax, math.sqrt(Ay * Ay + Az * Az)) * self.RAD_TO_DEG
+
+                # Gyro rates (deg/s)
+                gyroXRate = Gx
+                gyroYRate = Gy
+
+                # --- FIXED: integrate gyro angles correctly ---
+                gyroXAngle += gyroXRate * dt
+                gyroYAngle += gyroYRate * dt
+
+                # Complementary filter (example)
+                alpha = 0.98
+                compAngleX = alpha * (compAngleX + gyroXRate * dt) + (1 - alpha) * roll_acc
+                compAngleY = alpha * (compAngleY + gyroYRate * dt) + (1 - alpha) * pitch_acc
+
+                # Kalman filter update
+                self.kalAngleX = self.kalmanX.getAngle(roll_acc, gyroXRate, dt)
+                self.kalAngleY = self.kalmanY.getAngle(pitch_acc, gyroYRate, dt)
+
+                # Publish to shared state
+                with self.lock:
+                    self.roll = self.kalAngleX
+                    self.pitch = self.kalAngleY
+
+                time.sleep(0.001)
+        except Exception as exc:
+            print(exc)
+
     def measure(self):
-        angleThread = threading.Thread(target=self.measureAngles)
-        angleThread.daemon = True # Tự tắt khi chương trình chính tắt
-        angleThread.start()
+        t = threading.Thread(target=self.read_angles_loop, daemon=True)
+        t.start()
 
-    def measureAngles(self):
-        kalmanX = KalmanAngle()
-        kalmanY = KalmanAngle()
+    def get_roll_pitch(self):
+        with self.lock:
+            return self.roll, self.pitch
 
-        RestrictPitch = True
-        radToDeg = 57.2957786
-        kalAngleX = 0
-        kalAngleY = 0
+    # Keeping compatibility getters
+    def get_kalman_roll(self):
+        with self.lock:
+            return self.roll
 
-        # MPU6050 Registers
-        ACCEL_XOUT_H = 0x3B
-        ACCEL_YOUT_H = 0x3D
-        ACCEL_ZOUT_H = 0x3F
-        GYRO_XOUT_H = 0x43
-        GYRO_YOUT_H = 0x45
-        GYRO_ZOUT_H = 0x47
-
-        time.sleep(1)
-        
-        # Init Timer
-        timer = time.time()
-        
-        # Init Complementary values
-        accX = self.read_raw_data(ACCEL_XOUT_H)
-        accY = self.read_raw_data(ACCEL_YOUT_H)
-        accZ = self.read_raw_data(ACCEL_ZOUT_H)
-        
-        if (RestrictPitch):
-            roll = math.atan2(accY, accZ) * radToDeg
-            pitch = math.atan(-accX / math.sqrt((accY ** 2) + (accZ ** 2))) * radToDeg
-        else:
-            roll = math.atan(accY / math.sqrt((accX ** 2) + (accZ ** 2))) * radToDeg
-            pitch = math.atan2(-accX, accZ) * radToDeg
-
-        kalmanX.setAngle(roll)
-        kalmanY.setAngle(pitch)
-        compAngleX = roll
-        compAngleY = pitch
-
-        while True:
-            try:
-                accX = self.read_raw_data(ACCEL_XOUT_H)
-                accY = self.read_raw_data(ACCEL_YOUT_H)
-                accZ = self.read_raw_data(ACCEL_ZOUT_H)
-                gyroX = self.read_raw_data(GYRO_XOUT_H)
-                gyroY = self.read_raw_data(GYRO_YOUT_H)
-                gyroZ = self.read_raw_data(GYRO_ZOUT_H)
-
-                dt = time.time() - timer
-                timer = time.time()
-
-                if (RestrictPitch):
-                    roll = math.atan2(accY,accZ) * radToDeg
-                    pitch = math.atan(-accX/math.sqrt((accY**2)+(accZ**2))) * radToDeg
-                else:
-                    roll = math.atan(accY/math.sqrt((accX**2)+(accZ**2))) * radToDeg
-                    pitch = math.atan2(-accX,accZ) * radToDeg
-
-                # [QUAN TRỌNG] Tính tốc độ góc (Rate)
-                # 131.0 là độ nhạy của Gyro ở mức +-250dps
-                gyroXRate = gyroX / 131.0
-                gyroYRate = gyroY / 131.0
-                gyroZRate = gyroZ / 131.0 
-
-                # Cập nhật Kalman
-                if (RestrictPitch):
-                    if((roll < -90 and kalAngleX >90) or (roll > 90 and kalAngleX < -90)):
-                        kalmanX.setAngle(roll)
-                        compAngleX = roll
-                        kalAngleX   = roll
-                    else:
-                        kalAngleX = kalmanX.getAngle(roll,gyroXRate,dt)
-
-                    if(abs(kalAngleY)>90):
-                        gyroYRate  = -gyroYRate
-                        kalAngleY  = kalmanY.getAngle(pitch,gyroYRate,dt)
-                    else:
-                        kalAngleY  = kalmanY.getAngle(pitch,gyroYRate,dt)
-                else:
-                    if((pitch < -90 and kalAngleY >90) or (pitch > 90 and kalAngleY < -90)):
-                        kalmanY.setAngle(pitch)
-                        compAngleY = pitch
-                        kalAngleY   = pitch
-                    else:
-                        kalAngleY = kalmanY.getAngle(pitch,gyroYRate,dt)
-                    if(abs(kalAngleX)>90):
-                        gyroXRate  = -gyroXRate
-                        kalAngleX = kalmanX.getAngle(roll,gyroXRate,dt)
-
-                # Complementary Filter
-                compAngleX = 0.93 * (compAngleX + gyroXRate * dt) + 0.07 * roll
-                compAngleY = 0.93 * (compAngleY + gyroYRate * dt) + 0.07 * pitch
-
-                # --- LƯU GIÁ TRỊ VÀO BIẾN CLASS ĐỂ GỌI TỪ NGOÀI ---
-                self.pitch = compAngleY
-                self.roll  = compAngleX
-                
-                self.kalman_pitch = kalAngleY
-                self.kalman_roll = kalAngleX
-                self.compl_pitch = compAngleY
-                self.compl_roll = compAngleX
-                
-                # [MỚI] Lưu Rate để dùng cho PID vòng trong
-                self.rate_roll = gyroXRate
-                self.rate_pitch = gyroYRate
-                self.rate_yaw = gyroZRate
-
-                time.sleep(0.004) # Tăng tốc độ đọc lên (4ms ~ 250Hz)
-
-            except Exception as exc:
-                print(f"IMU Error: {exc}")
-
-    # --- GETTERS ---
-    def get_complementary_roll(self): return self.compl_roll
-    def get_complementary_pitch(self): return self.compl_pitch
-    
-    # [MỚI] Hàm lấy tốc độ góc cho PID
-    def get_rates(self):
-        return self.rate_roll, self.rate_pitch, self.rate_yaw
+    def get_kalman_pitch(self):
+        with self.lock:
+            return self.pitch

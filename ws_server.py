@@ -1,237 +1,178 @@
-#!/usr/bin/env python3
 import asyncio
 import websockets
 import json
 import time
+import math
 
-from sensor_manager import get_state
-from motor_driver import MotorController
+from sensor_manager import SensorManager
 from pid_controller import PIDController
-from motor_mixer import QuadXMixer
+from motor_mixer import mix_quad_x
 
-# --- CONFIG ---
-MOTOR_PINS = [19, 18, 12, 13]
-HOST = "0.0.0.0"
-PORT = 8765
-
+# Throttle base
 BASE_THROTTLE = 1000
-MIN_CMD = 1000
-MAX_CMD = 1900
+MAX_THROTTLE = 2000
+MIN_THROTTLE = 1000
 
+# PID target (degrees)
 TARGET_ROLL = 0.0
 TARGET_PITCH = 0.0
 
-CONTROL_ALLOWED = False
-PID_RUNNING = False
-STATUS_MSG = "Waiting..."
+# WS server config
+HOST = "0.0.0.0"
+PORT = 8765
 
-# PID readiness (chỉ cho START khi GUI đã set đủ)
-PID_READY_ROLL = False
-PID_READY_PITCH = False
+# Shared state
+state = {
+    "connected": False,
+    "armed": False,
+    "pid_enabled": False,
+    "throttle": BASE_THROTTLE,
+    "pid": {
+        "roll": {"kp": 0.0, "ki": 0.0, "kd": 0.0},
+        "pitch": {"kp": 0.0, "ki": 0.0, "kd": 0.0},
+        "yaw": {"kp": 0.0, "ki": 0.0, "kd": 0.0},
+    },
+    "angles": {"roll": 0.0, "pitch": 0.0},
+    "motors": [MIN_THROTTLE, MIN_THROTTLE, MIN_THROTTLE, MIN_THROTTLE],
+}
 
-# --- Motors ---
-try:
-    motors = MotorController(MOTOR_PINS)
-except Exception:
-    motors = None
+# Init sensor manager
+sensor = SensorManager()
 
-mixer = QuadXMixer(min_cmd=MIN_CMD, max_cmd=MAX_CMD)
+# PID controllers (gains set by GUI)
+pid_roll = PIDController(out_limit=400, i_limit=200)  # kp/ki/kd will be overwritten by GUI
+pid_pitch = PIDController(out_limit=400, i_limit=200)
 
-# --- PID 1 vòng: KHÔNG SET SẴN (0,0,0) ---
-pid_roll  = PIDController(kp=0.0, ki=0.0, kd=0.0, i_limit=200, out_limit=400)
-pid_pitch = PIDController(kp=0.0, ki=0.0, kd=0.0, i_limit=200, out_limit=400)
+def apply_pid_values():
+    pid_roll.kp = state["pid"]["roll"]["kp"]
+    pid_roll.ki = state["pid"]["roll"]["ki"]
+    pid_roll.kd = state["pid"]["roll"]["kd"]
 
-def reset_pids():
-    pid_roll.reset()
-    pid_pitch.reset()
-
-def pid_ready():
-    return PID_READY_ROLL and PID_READY_PITCH
-
-
-async def run_auto_arm():
-    global CONTROL_ALLOWED, STATUS_MSG
-    CONTROL_ALLOWED = False
-    STATUS_MSG = "Auto-Arming: Wait 10s..."
-    print(STATUS_MSG)
-    await asyncio.sleep(10.0)
-
-    if not motors:
-        STATUS_MSG = "Sim Mode (no motors)."
-        CONTROL_ALLOWED = True
-        reset_pids()
-        return
-
-    STATUS_MSG = "Init ESC (0)..."
-    motors.set_all_zero()
-    await asyncio.sleep(2.0)
-
-    STATUS_MSG = "Sending Min (1000)..."
-    motors.set_all(1000)
-    await asyncio.sleep(3.0)
-
-    reset_pids()
-    STATUS_MSG = "ARMED. Please set PID from GUI."
-    print("ARMED.")
-    CONTROL_ALLOWED = True
-
+    pid_pitch.kp = state["pid"]["pitch"]["kp"]
+    pid_pitch.ki = state["pid"]["pitch"]["ki"]
+    pid_pitch.kd = state["pid"]["pitch"]["kd"]
 
 async def handler(websocket):
-    global PID_RUNNING, STATUS_MSG, CONTROL_ALLOWED, BASE_THROTTLE, TARGET_ROLL, TARGET_PITCH
-    global PID_READY_ROLL, PID_READY_PITCH
+    print("[WS] Client connected")
+    state["connected"] = True
 
-    print(f"[CLIENT] {websocket.remote_address}")
-    asyncio.create_task(run_auto_arm())
-
-    current_motor_vals = [1000, 1000, 1000, 1000]
-    last_t = time.monotonic()
+    # control loop timing
+    last_t = time.time()
 
     try:
-        while True:
-            # dt clamp
-            now = time.monotonic()
+        async for message in websocket:
+            # Parse message
+            try:
+                data = json.loads(message)
+            except Exception:
+                continue
+
+            cmd = data.get("cmd", "")
+
+            if cmd == "PID":
+                # Update PID values from GUI
+                roll = data.get("roll", {})
+                pitch = data.get("pitch", {})
+
+                state["pid"]["roll"]["kp"] = float(roll.get("kp", 0.0))
+                state["pid"]["roll"]["ki"] = float(roll.get("ki", 0.0))
+                state["pid"]["roll"]["kd"] = float(roll.get("kd", 0.0))
+
+                state["pid"]["pitch"]["kp"] = float(pitch.get("kp", 0.0))
+                state["pid"]["pitch"]["ki"] = float(pitch.get("ki", 0.0))
+                state["pid"]["pitch"]["kd"] = float(pitch.get("kd", 0.0))
+
+                apply_pid_values()
+
+            elif cmd == "THROTTLE":
+                state["throttle"] = int(data.get("throttle", BASE_THROTTLE))
+                state["throttle"] = max(MIN_THROTTLE, min(MAX_THROTTLE, state["throttle"]))
+
+            elif cmd == "ARM":
+                state["armed"] = True
+                state["pid_enabled"] = False
+                pid_roll.reset()
+                pid_pitch.reset()
+                state["motors"] = [MIN_THROTTLE, MIN_THROTTLE, MIN_THROTTLE, MIN_THROTTLE]
+                print("[WS] ARMED")
+
+            elif cmd == "DISARM":
+                state["armed"] = False
+                state["pid_enabled"] = False
+                pid_roll.reset()
+                pid_pitch.reset()
+                state["motors"] = [MIN_THROTTLE, MIN_THROTTLE, MIN_THROTTLE, MIN_THROTTLE]
+                print("[WS] DISARMED")
+
+            elif cmd == "START":
+                # Start PID
+                # Require that GUI has set non-zero kp at least
+                if state["pid"]["roll"]["kp"] == 0.0 and state["pid"]["pitch"]["kp"] == 0.0:
+                    print("[WS] START ignored: PID not set from GUI")
+                else:
+                    state["pid_enabled"] = True
+                    pid_roll.reset()
+                    pid_pitch.reset()
+                    last_t = time.time()
+                    print("[WS] PID STARTED")
+
+            elif cmd == "STOP":
+                state["pid_enabled"] = False
+                pid_roll.reset()
+                pid_pitch.reset()
+                state["motors"] = [MIN_THROTTLE, MIN_THROTTLE, MIN_THROTTLE, MIN_THROTTLE]
+                print("[WS] PID STOPPED")
+
+            # --- Control loop tick (triggered per message) ---
+            now = time.time()
             dt = now - last_t
             last_t = now
-            if dt < 0.001: dt = 0.001
-            if dt > 0.05:  dt = 0.05
 
-            # 1) read angles
-            st = get_state()
-            curr_r = float(st.get("roll", 0.0))
-            curr_p = float(st.get("pitch", 0.0))
-            curr_y = float(st.get("yaw_rel", 0.0))
+            # clamp dt
+            dt = max(0.001, min(0.05, dt))
 
-            # 2) PID (only when ready)
-            r_out = 0.0
-            p_out = 0.0
-            y_out = 0.0
+            # Read sensors
+            roll, pitch = sensor.get_roll_pitch()
+            state["angles"]["roll"] = roll
+            state["angles"]["pitch"] = pitch
 
-            if CONTROL_ALLOWED and PID_RUNNING and pid_ready():
-                r_out = pid_roll.compute(TARGET_ROLL, curr_r, dt=dt)
-                p_out = pid_pitch.compute(TARGET_PITCH, curr_p, dt=dt)
+            # Compute PID outputs
+            out_roll = 0.0
+            out_pitch = 0.0
+            if state["armed"] and state["pid_enabled"]:
+                out_roll = pid_roll.compute(TARGET_ROLL, roll, dt=dt)
+                out_pitch = pid_pitch.compute(TARGET_PITCH, pitch, dt=dt)
 
-                vals = mixer.compute(BASE_THROTTLE, r_out, p_out, y_out)
-                current_motor_vals = vals
+            # Mix motors
+            if state["armed"]:
+                m1, m2, m3, m4 = mix_quad_x(
+                    throttle=state["throttle"],
+                    roll=out_roll,
+                    pitch=out_pitch,
+                    yaw=0.0,
+                    min_pwm=MIN_THROTTLE,
+                    max_pwm=MAX_THROTTLE,
+                )
+                state["motors"] = [m1, m2, m3, m4]
+            else:
+                state["motors"] = [MIN_THROTTLE, MIN_THROTTLE, MIN_THROTTLE, MIN_THROTTLE]
 
-                if motors:
-                    for i, v in enumerate(vals):
-                        motors.set_motor(i, v)
+            # Send telemetry back
+            await websocket.send(json.dumps(state))
 
-            # 3) telemetry
-            payload = {
-                "roll": curr_r,
-                "pitch": curr_p,
-                "yaw": curr_y,
-
-                "armed": CONTROL_ALLOWED,
-                "pid_active": PID_RUNNING,
-                "msg": STATUS_MSG,
-
-                "pid_roll": r_out,
-                "pid_pitch": p_out,
-                "pid_yaw": 0.0,
-
-                "motors": current_motor_vals,
-                "throttle": BASE_THROTTLE,
-
-                # expose PID current values so GUI can display them
-                "pid_cfg": {
-                    "roll":  {"kp": pid_roll.kp,  "ki": pid_roll.ki,  "kd": pid_roll.kd,  "ready": PID_READY_ROLL},
-                    "pitch": {"kp": pid_pitch.kp, "ki": pid_pitch.ki, "kd": pid_pitch.kd, "ready": PID_READY_PITCH},
-                }
-            }
-            await websocket.send(json.dumps(payload))
-
-            # 4) receive commands
-            try:
-                msg = await asyncio.wait_for(websocket.recv(), timeout=0.005)
-                data = json.loads(msg)
-                ctype = data.get("type")
-
-                if ctype == "START_PID":
-                    if not CONTROL_ALLOWED:
-                        STATUS_MSG = "Wait for Arming..."
-                    elif not pid_ready():
-                        STATUS_MSG = "Set PID (Roll & Pitch) from GUI first!"
-                    else:
-                        PID_RUNNING = True
-                        reset_pids()
-                        STATUS_MSG = f"PID ON (Thr: {BASE_THROTTLE})"
-
-                elif ctype == "STOP_PID":
-                    PID_RUNNING = False
-                    reset_pids()
-                    STATUS_MSG = "PID STOPPED."
-                    current_motor_vals = [1000, 1000, 1000, 1000]
-                    if motors:
-                        motors.set_all(1000)
-
-                elif ctype == "set_throttle":
-                    val = int(data.get("value", 1000))
-                    BASE_THROTTLE = max(1000, min(1800, val))
-                    STATUS_MSG = f"Throttle: {BASE_THROTTLE}"
-
-                elif ctype == "set_target":
-                    TARGET_ROLL = float(data.get("roll", 0.0))
-                    TARGET_PITCH = float(data.get("pitch", 0.0))
-                    STATUS_MSG = f"Target R={TARGET_ROLL:.1f} P={TARGET_PITCH:.1f}"
-
-                elif ctype == "set_pid":
-                    ax = data.get("axis")
-                    kp = float(data.get("kp", 0.0))
-                    ki = float(data.get("ki", 0.0))
-                    kd = float(data.get("kd", 0.0))
-
-                    if ax == "roll":
-                        pid_roll.update_constants(kp, ki, kd)
-                        PID_READY_ROLL = True
-                        STATUS_MSG = f"SET ROLL PID OK"
-                    elif ax == "pitch":
-                        pid_pitch.update_constants(kp, ki, kd)
-                        PID_READY_PITCH = True
-                        STATUS_MSG = f"SET PITCH PID OK"
-                    else:
-                        STATUS_MSG = "Axis not supported (yaw later)."
-
-                elif ctype == "test_motor":
-                    # Manual test only when PID OFF
-                    if CONTROL_ALLOWED and (not PID_RUNNING) and motors:
-                        mid = int(data.get("motor_id", 1)) - 1
-                        val_percent = float(data.get("value", 0.0))
-                        mid = max(0, min(3, mid))
-                        val_percent = max(0.0, min(100.0, val_percent))
-                        pulse = 1000 + int(val_percent * 10)
-                        motors.set_motor(mid, pulse)
-                        current_motor_vals[mid] = pulse
-                        STATUS_MSG = f"TEST M{mid+1}={pulse}"
-
-            except asyncio.TimeoutError:
-                pass
-            except websockets.exceptions.ConnectionClosed:
-                break
-
-            await asyncio.sleep(0.01)
-
-    except Exception as e:
-        print(f"Err: {e}")
+    except websockets.exceptions.ConnectionClosed:
+        pass
     finally:
-        PID_RUNNING = False
-        CONTROL_ALLOWED = False
-        reset_pids()
-        if motors:
-            motors.stop_all()
-        print("Disconnected.")
-
+        print("[WS] Client disconnected")
+        state["connected"] = False
+        state["armed"] = False
+        state["pid_enabled"] = False
+        state["motors"] = [MIN_THROTTLE, MIN_THROTTLE, MIN_THROTTLE, MIN_THROTTLE]
 
 async def main():
-    print(f"Server on {HOST}:{PORT}")
+    print(f"[WS] Starting server on {HOST}:{PORT}")
     async with websockets.serve(handler, HOST, PORT):
         await asyncio.Future()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        if motors:
-            motors.stop_all()
-        print("Stopped.")
+    asyncio.run(main())
