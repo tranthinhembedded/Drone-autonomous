@@ -1,3 +1,5 @@
+# motor_mixer.py
+
 class QuadXMixer:
     def __init__(self, min_cmd=1100, max_cmd=1900):
         """
@@ -37,3 +39,15 @@ class QuadXMixer:
 
     def clamp(self, value):
         return max(self.min_cmd, min(self.max_cmd, int(value)))
+
+
+# --- Compatibility wrapper for ws_server.py ---
+_default_mixer = QuadXMixer(min_cmd=1000, max_cmd=2000)
+
+def mix_quad_x(throttle, roll, pitch, yaw=0.0, min_pwm=1000, max_pwm=2000):
+    global _default_mixer
+    # cập nhật clamp theo ws_server truyền vào
+    _default_mixer.min_cmd = min_pwm
+    _default_mixer.max_cmd = max_pwm
+    m1, m2, m3, m4 = _default_mixer.compute(throttle, roll, pitch, yaw)
+    return m1, m2, m3, m4
