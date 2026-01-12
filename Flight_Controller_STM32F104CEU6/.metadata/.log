@@ -1,0 +1,37 @@
+!SESSION 2025-12-14 11:46:32.122 -----------------------------------------------
+eclipse.buildId=Version 2.0.0
+java.version=21.0.8
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_US
+Command-line arguments:  -os win32 -ws win32 -arch x86_64 -data C:\Users\THINH\Desktop\F411_ReadSenSors\f401
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2025-12-14 11:46:35.490
+!MESSAGE Log4j2 initialized with config file C:\Users\THINH\Desktop\F411_ReadSenSors\f401\.metadata\.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2025-12-14 11:46:41.939
+!MESSAGE Started RMI Server, listening on port 41337
+!SESSION 2025-12-14 11:49:46.216 -----------------------------------------------
+eclipse.buildId=Version 2.0.0
+java.version=21.0.8
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_US
+Framework arguments:  C:\Users\THINH\Desktop\F411_ReadSenSors\f401\.project
+Command-line arguments:  -os win32 -ws win32 -arch x86_64 C:\Users\THINH\Desktop\F411_ReadSenSors\f401\.project
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2025-12-14 11:49:48.967
+!MESSAGE Log4j2 initialized with config file C:\Users\THINH\Desktop\F411_ReadSenSors\f401\.metadata\.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2025-12-14 11:49:56.015
+!MESSAGE Started RMI Server, listening on port 41337
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2025-12-14 11:50:04.914
+!MESSAGE Executed PowerShell command powershell.exe -Command "Get-CimInstance -ClassName Win32_SerialPort | Select-Object -ExpandProperty DeviceID":
+COM4
+COM3
+
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2025-12-14 11:50:04.914
+!MESSAGE port: COM4
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2025-12-14 11:50:04.914
+!MESSAGE port: COM3

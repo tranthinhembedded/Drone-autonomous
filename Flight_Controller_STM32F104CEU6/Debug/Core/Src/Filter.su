@@ -1,0 +1,4 @@
+../Core/Src/Filter.c:128:18:Angle_Diff	24	static
+../Core/Src/Filter.c:135:6:Complimentary_Filter_Reset	24	static
+../Core/Src/Filter.c:150:6:Complimentary_Filter_Predict	96	static
+../Core/Src/Filter.c:244:6:Complimentary_Filter_Update	72	static
