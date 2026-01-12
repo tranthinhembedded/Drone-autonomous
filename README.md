@@ -103,5 +103,5 @@ Kết quả cho thấy UAV có khả năng:
 Drone-autonomous/
 │
 ├── Flight_Controller_STM32F401CEU6/   # Firmware STM32 (PID, IMU, PWM)
-├── Python_FC/                         # Xử lý ảnh & điều hướng (Raspberry Pi)
+├── Python_FC/                         # Code Flight Controller Python on raspberry pi 
 ├── README.md
